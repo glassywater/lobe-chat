@@ -16,7 +16,9 @@ import {
   ChatMessage,
   ChatMessageError,
   CreateMessageParams,
+  GroundingSearch,
   MessageToolCall,
+  ModelReasoning,
 } from '@/types/message';
 import { TraceEventPayloads } from '@/types/trace';
 import { setNamespace } from '@/utils/storeDebug';
@@ -72,7 +74,11 @@ export interface ChatMessageAction {
   internal_updateMessageContent: (
     id: string,
     content: string,
-    toolCalls?: MessageToolCall[],
+    extra?: {
+      toolCalls?: MessageToolCall[];
+      reasoning?: ModelReasoning;
+      search?: GroundingSearch;
+    },
   ) => Promise<void>;
   /**
    * update the message error with optimistic update
@@ -270,17 +276,17 @@ export const chatMessage: StateCreator<
     await messageService.updateMessage(id, { error });
     await get().refreshMessages();
   },
-  internal_updateMessageContent: async (id, content, toolCalls) => {
+  internal_updateMessageContent: async (id, content, extra) => {
     const { internal_dispatchMessage, refreshMessages, internal_transformToolCalls } = get();
 
     // Due to the async update method and refresh need about 100ms
     // we need to update the message content at the frontend to avoid the update flick
     // refs: https://medium.com/@kyledeguzmanx/what-are-optimistic-updates-483662c3e171
-    if (toolCalls) {
+    if (extra?.toolCalls) {
       internal_dispatchMessage({
         id,
         type: 'updateMessage',
-        value: { tools: internal_transformToolCalls(toolCalls) },
+        value: { tools: internal_transformToolCalls(extra?.toolCalls) },
       });
     } else {
       internal_dispatchMessage({ id, type: 'updateMessage', value: { content } });
@@ -288,7 +294,9 @@ export const chatMessage: StateCreator<
 
     await messageService.updateMessage(id, {
       content,
-      tools: toolCalls ? internal_transformToolCalls(toolCalls) : undefined,
+      tools: extra?.toolCalls ? internal_transformToolCalls(extra?.toolCalls) : undefined,
+      reasoning: extra?.reasoning,
+      search: extra?.search,
     });
     await refreshMessages();
   },
@@ -365,13 +373,14 @@ export const chatMessage: StateCreator<
     );
   },
   internal_toggleLoadingArrays: (key, loading, id, action) => {
+    const abortControllerKey = `${key}AbortController`;
     if (loading) {
       window.addEventListener('beforeunload', preventLeavingFn);
 
       const abortController = new AbortController();
       set(
         {
-          abortController,
+          [abortControllerKey]: abortController,
           [key]: toggleBooleanList(get()[key] as string[], id!, loading),
         },
         false,
@@ -381,11 +390,11 @@ export const chatMessage: StateCreator<
       return abortController;
     } else {
       if (!id) {
-        set({ abortController: undefined, [key]: [] }, false, action);
+        set({ [abortControllerKey]: undefined, [key]: [] }, false, action);
       } else
         set(
           {
-            abortController: undefined,
+            [abortControllerKey]: undefined,
             [key]: toggleBooleanList(get()[key] as string[], id, loading),
           },
           false,
